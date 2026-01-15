@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.venv/
+.env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Panel / Bokeh
+.bokeh/
+.panel/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+*.hdf5
+*.FLOW.hdf5
+*.root
+
+# Logs
+*.log
