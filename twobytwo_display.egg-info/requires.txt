@@ -1,0 +1,5 @@
+numpy
+h5py
+matplotlib
+plotly
+panel>=1.4

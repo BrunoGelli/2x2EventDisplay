@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "twobytwo-display"
+version = "0.1.0"
+description = "2x2 Demonstrator event display (Panel web app) for ndlar_flow HDF5 files"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy",
+  "h5py",
+  "matplotlib",
+  "plotly",
+  "panel>=1.4",
+]
+
+[tool.setuptools]
+packages = ["twobytwo_display"]
+
+[project.urls]
+Home = "https://example.invalid"
