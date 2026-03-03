@@ -15,7 +15,7 @@ import panel as pn
 
 from twobytwo_display.clustering import angle_to_z_of_centroid_line, dbscan_clusters
 from twobytwo_display.io import FlowFile
-from twobytwo_display.viz import make_plotly_2d_projections, make_plotly_3d, make_plotly_analysis, muon_region_labels
+from twobytwo_display.viz import make_plotly_2d_projections, make_plotly_3d, muon_region_labels
 
 pn.extension("plotly")
 
@@ -97,7 +97,6 @@ clusters_info = pn.pane.Markdown("", height=180)
 
 view3d = pn.pane.Plotly(height=760, sizing_mode="stretch_both")
 view2d = pn.pane.Plotly(height=760, sizing_mode="stretch_both")
-view_analysis = pn.pane.Plotly(height=760, sizing_mode="stretch_both")
 
 
 def _set_status(message: str, ok: bool = True):
@@ -187,29 +186,6 @@ def _compute_clusters(hits, muon_track):
     return clusters
 
 
-def _analysis_markdown(hits, clusters, truth_info):
-    lines = [
-        f"### Event analysis",
-        f"- hits: **{len(hits)}**",
-        f"- total Q: **{np.nansum(hits['Q'].astype(float)):.4g}**" if len(hits) else "- total Q: **0**",
-    ]
-    if clusters is None:
-        lines.append("- clusters: *(disabled)*")
-    else:
-        lines.append(f"- clusters kept: **{len(clusters)}**")
-        if len(clusters):
-            for i, c in enumerate(clusters[:8]):
-                lines.append(f"  - cluster {i}: nhits={c.n_hits}, sumQ={c.total_Q:.3g}, max_extent={c.extent_max_cm:.2f} cm")
-    if truth_info is None:
-        lines.append("- truth: *(disabled)*")
-    else:
-        lines.append(f"- truth mode: **{truth_info.get('selection','?')}**")
-        lines.append(f"- truth segments: **{truth_info.get('chosen_n_segments', 0)}**")
-        if truth_info.get("multi", False):
-            lines.append("- window has multiple truth event_ids")
-    return "\n".join(lines)
-
-
 def _refresh_views(*_):
     _refresh_control_visibility()
     if state.flow is None:
@@ -289,10 +265,6 @@ def _refresh_views(*_):
 
     view3d.object = fig3d
     view2d.object = fig2d
-    view_analysis.object = pn.Column(
-        pn.pane.Markdown(_analysis_markdown(hits, clusters, truth_info), sizing_mode="stretch_width"),
-        pn.pane.Plotly(fig_analysis, height=450, sizing_mode="stretch_width"),
-    )
     _set_status(
         f"**File:** `{os.path.basename(state.path)}`  \n"
         f"**Event:** `{ev}`  \n"
@@ -391,6 +363,6 @@ sidebar = pn.Column(
     sizing_mode="stretch_height",
 )
 
-main_tabs = pn.Tabs(("3D", view3d), ("2D", view2d), ("Analysis", view_analysis), dynamic=True)
+main_tabs = pn.Tabs(("3D", view3d), ("2D", view2d), dynamic=True)
 layout = pn.Row(sidebar, main_tabs, sizing_mode="stretch_both")
 layout.servable(title="2x2 Event Display")
