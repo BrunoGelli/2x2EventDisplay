@@ -78,12 +78,11 @@ def make_plotly_2d_projections(hits, color_mode="Q", max_hits=40000, point_size=
     customdata = _hover_customdata(hits)
     hover = "x=%{x:.2f}<br>y=%{y:.2f}<br>Q=%{customdata[0]:.3g}<br>t_drift=%{customdata[1]:.3g}<br>ts_pps=%{customdata[2]:.3g}<br>module=%{customdata[3]}<extra></extra>"
 
-    fig = make_subplots(rows=2, cols=2, subplot_titles=("XY", "XZ", "YZ", "t_drift vs Q"))
+    fig = make_subplots(rows=2, cols=2, subplot_titles=("XY", "XZ", "YZ", "Charge histogram"))
     projections = [
         (hits["x"], hits["y"], 1, 1, "x [cm]", "y [cm]"),
         (hits["x"], hits["z"], 1, 2, "x [cm]", "z [cm]"),
         (hits["y"], hits["z"], 2, 1, "y [cm]", "z [cm]"),
-        (hits["t_drift"] if "t_drift" in (hits.dtype.names or ()) else np.arange(len(hits)), hits["Q"], 2, 2, "t_drift", "Q"),
     ]
 
     for i, (xx, yy, r, col, xl, yl) in enumerate(projections):
@@ -102,6 +101,23 @@ def make_plotly_2d_projections(hits, color_mode="Q", max_hits=40000, point_size=
         )
         fig.update_xaxes(title_text=xl, row=r, col=col)
         fig.update_yaxes(title_text=yl, row=r, col=col)
+
+    # Q histogram in panel (2,2)
+    qvals = hits["Q"].astype(float)
+    qvals = qvals[np.isfinite(qvals)]
+    fig.add_trace(
+        go.Histogram(
+            x=qvals,
+            nbinsx=80,
+            marker=dict(color="#4c78a8"),
+            showlegend=False,
+            hovertemplate="Q=%{x:.3g}<br>count=%{y}<extra></extra>",
+        ),
+        row=2,
+        col=2,
+    )
+    fig.update_xaxes(title_text="Q", row=2, col=2)
+    fig.update_yaxes(title_text="count", row=2, col=2)
 
     fig.update_layout(height=780, margin=dict(l=10, r=10, t=40, b=10), title="2D projections")
     return fig
@@ -141,7 +157,15 @@ def make_plotly_3d(
         customdata = np.stack([hits["Q"].astype(float)], axis=1)
         fig.add_trace(go.Scatter3d(
             x=hits["z"], y=hits["x"], z=hits["y"], mode="markers", name="hits",
-            marker=dict(size=point_size, color=c, colorscale="Viridis", showscale=True, colorbar=dict(title=clabel)),
+            customdata=customdata,
+            hovertemplate="z=%{x:.2f}<br>x=%{y:.2f}<br>y=%{z:.2f}<br>Q=%{customdata[0]:.4g}<extra></extra>",
+            marker=dict(
+                size=point_size,
+                color=c,
+                colorscale="Viridis",
+                showscale=True,
+                colorbar=dict(title=clabel, len=0.55, thickness=16, y=0.48),
+            ),
         ))
 
     if show_boxes:
@@ -174,11 +198,27 @@ def make_plotly_3d(
             segs = segs[np.random.choice(len(segs), size=mc_max_segments, replace=False)]
 
         xline, yline, zline = [], [], []
+        hover = []
         for s in segs:
             xline += [float(s["z_start"]), float(s["z_end"]), None]
             yline += [float(s["x_start"]), float(s["x_end"]), None]
             zline += [float(s["y_start"]), float(s["y_end"]), None]
-        fig.add_trace(go.Scatter3d(x=xline, y=yline, z=zline, mode="lines", line=dict(width=4), name=mc_label, opacity=0.7))
+            pdg = int(s["pdg_id"]) if "pdg_id" in (segs.dtype.names or ()) else -999
+            de = float(s["dE"]) if "dE" in (segs.dtype.names or ()) else float("nan")
+            hover += [f"pdg={pdg}<br>dE={de:.3g}", f"pdg={pdg}<br>dE={de:.3g}", None]
+        fig.add_trace(
+            go.Scatter3d(
+                x=xline,
+                y=yline,
+                z=zline,
+                mode="lines",
+                line=dict(width=4),
+                name=mc_label,
+                opacity=0.7,
+                hoverinfo="text",
+                text=hover,
+            )
+        )
 
     if mc_vertices is not None and len(mc_vertices) > 0 and "vertex" in (mc_vertices.dtype.names or ()):
         vx = mc_vertices["vertex"][:, 0].astype(float)
@@ -193,4 +233,25 @@ def make_plotly_3d(
         fig.add_trace(go.Scatter3d(x=vz, y=vx, z=vy, mode="markers", marker=dict(size=6, symbol="diamond"), name="MC vertices", text=hovertext, hoverinfo="text"))
 
     fig.update_layout(scene=dict(xaxis_title="z [cm]", yaxis_title="x [cm]", zaxis_title="y [cm]", aspectmode="data"), margin=dict(l=0, r=0, t=35, b=0), title="3D view (interactive)")
+    return fig
+
+
+def make_plotly_analysis(hits, clusters=None):
+    """Small analysis figure with charge distribution and drift distribution."""
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("Charge distribution", "t_drift distribution"))
+    if len(hits):
+        qvals = hits["Q"].astype(float)
+        qvals = qvals[np.isfinite(qvals)]
+        fig.add_trace(go.Histogram(x=qvals, nbinsx=100, marker=dict(color="#4c78a8"), name="Q"), row=1, col=1)
+
+        if "t_drift" in (hits.dtype.names or ()):
+            td = hits["t_drift"].astype(float)
+            td = td[np.isfinite(td)]
+            fig.add_trace(go.Histogram(x=td, nbinsx=100, marker=dict(color="#f58518"), name="t_drift"), row=1, col=2)
+
+    fig.update_xaxes(title_text="Q", row=1, col=1)
+    fig.update_xaxes(title_text="t_drift", row=1, col=2)
+    fig.update_yaxes(title_text="count", row=1, col=1)
+    fig.update_yaxes(title_text="count", row=1, col=2)
+    fig.update_layout(height=500, showlegend=False, margin=dict(l=10, r=10, t=40, b=10), title="Analysis")
     return fig
