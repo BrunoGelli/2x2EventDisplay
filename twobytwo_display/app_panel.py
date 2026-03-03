@@ -1,448 +1,396 @@
-"""Panel web app for browsing 2x2 ndlar_flow HDF5 files.
+"""Panel event display UI.
 
 Run:
-  panel serve -m twobytwo_display.app_panel --show --args --h5 path/to/file.FLOW.hdf5
-
-Notes:
-  - 3D is Plotly (always interactive in browser).
-  - 2D projections are Matplotlib (fast).
+  panel serve -m twobytwo_display.app_panel --show --args --h5 /path/to/file.FLOW.hdf5
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import os
+
 import numpy as np
 import panel as pn
 
+from twobytwo_display.clustering import angle_to_z_of_centroid_line, dbscan_clusters
 from twobytwo_display.io import FlowFile
-from twobytwo_display.viz import make_plotly_3d, make_matplotlib_figure
-from twobytwo_display.viz import muon_region_labels
-from twobytwo_display.clustering import dbscan_clusters
-from twobytwo_display.clustering import angle_to_z_of_centroid_line
-
-
+from twobytwo_display.viz import make_plotly_2d_projections, make_plotly_3d, make_plotly_analysis, muon_region_labels
 
 pn.extension("plotly")
 
-muon_indices = []
-muon_pos = 0
 
 def _parse_args():
-    p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("--h5", type=str, default=os.environ.get("TWOBYTWO_H5", ""), help="Path to FLOW HDF5 file")
-    p.add_argument("--max_hits", type=int, default=40000)
-    return p.parse_known_args()[0]
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--h5", type=str, default=os.environ.get("TWOBYTWO_H5", ""))
+    parser.add_argument("--max_hits", type=int, default=40000)
+    return parser.parse_known_args()[0]
 
-_ARGS = _parse_args()
 
 class AppState:
     def __init__(self, path: str, max_hits: int):
         self.path = path
         self.max_hits = max_hits
         self.flow = None
+        self.muon_indices = []
 
     def open(self, path: str):
-        if self.flow is not None:
-            try: self.flow.close()
-            except Exception: pass
+        self.close()
         self.path = path
         if not path:
-            self.flow = None
             return
         self.flow = FlowFile.open(path)
+        self.muon_indices = self.flow.muon_event_indices()
 
     def close(self):
         if self.flow is not None:
             self.flow.close()
             self.flow = None
+        self.muon_indices = []
 
-state = AppState(_ARGS.h5, _ARGS.max_hits)
+
+ARGS = _parse_args()
+state = AppState(ARGS.h5, ARGS.max_hits)
 if state.path:
     state.open(state.path)
 
-# Widgets
-file_input = pn.widgets.TextInput(name="HDF5 path", value=state.path, placeholder="/path/to/file.FLOW.hdf5")
+# ---------- widgets ----------
+file_input = pn.widgets.TextInput(name="HDF5 path", value=state.path)
 open_btn = pn.widgets.Button(name="Open", button_type="primary")
-status = pn.pane.Markdown("")
+status = pn.pane.Markdown("", height=160)
 
-color_mode = pn.widgets.Select(name="Color", options=["Q", "t_drift", "ts_pps", "muon_region"], value="Q")
-max_hits = pn.widgets.IntInput(name="Max hits (downsample)", value=state.max_hits, step=1000, start=1000, width=140)
-point_size = pn.widgets.IntSlider(name="Point size", start=1, end=8, value=2)
-show_boxes = pn.widgets.Checkbox(name="Show module boxes", value=True)
-show_muon = pn.widgets.Checkbox(name="Overlay rock muon track (if available)", value=False)
-
-event_slider = pn.widgets.IntSlider(name="Event", start=0, end=0, value=0, step=1)
-event_input = pn.widgets.IntInput(name="Event #", value=0, step=1, width=140)
-
-prev_btn = pn.widgets.Button(name="◀ Prev", button_type="primary", width=90)
+# navigation
+event_slider = pn.widgets.IntSlider(name="Event", start=0, end=0, value=0)
+event_input = pn.widgets.IntInput(name="Jump to event", value=0, step=1)
+prev_btn = pn.widgets.Button(name="◀ Prev", width=90)
 next_btn = pn.widgets.Button(name="Next ▶", button_type="primary", width=90)
-muon_only = pn.widgets.Toggle(name="Muon-only scan",button_type="primary", value=False)
+muon_only = pn.widgets.Toggle(name="Muon-only scan", value=False)
 
-show_clusters = pn.widgets.Checkbox(name="Show clusters (DBSCAN)", value=False)
-db_eps = pn.widgets.FloatInput(name="DBSCAN eps [cm]", value=1.5, step=0.1, width=140)
-db_min = pn.widgets.IntInput(name="DBSCAN min_samples", value=10, step=1, width=140)
+# display
+hit_type = pn.widgets.Select(name="Hit type", options=["prompt", "final"], value="prompt")
+color_mode = pn.widgets.Select(name="Color mode", options=["Q", "t_drift", "ts_pps", "muon_region"], value="Q")
+max_hits = pn.widgets.IntInput(name="Max hits", value=ARGS.max_hits, step=1000, start=1000)
+point_size = pn.widgets.IntSlider(name="Point size", start=1, end=10, value=2)
+show_boxes = pn.widgets.Checkbox(name="Show geometry boxes", value=True)
 
-cluster_min_hits = pn.widgets.IntInput(name="Keep clusters with nhits ≥", value=20, step=1, width=180)
-cluster_max_extent = pn.widgets.FloatInput(name="Keep clusters with max extent ≤ [cm]", value=8.0, step=0.5, width=220)
+# truth
+show_truth = pn.widgets.Checkbox(name="Enable truth overlay", value=False)
+truth_mode = pn.widgets.Select(name="Truth mode", options=["backtrack", "window"], value="backtrack")
+truth_event = pn.widgets.Select(name="Window truth event_id", options=["auto"], value="auto")
+show_vertices = pn.widgets.Checkbox(name="Show truth vertices", value=True)
+show_all_window_vertices = pn.widgets.Checkbox(name="Window mode: all vertices in window", value=False)
+mc_only_muons = pn.widgets.Checkbox(name="Truth only muons (|pdg|=13)", value=False)
+mc_max_segments = pn.widgets.IntInput(name="Draw max truth segments", value=3000, step=500, start=0)
+mc_topk = pn.widgets.IntInput(name="Backtrack top-K segments", value=2000, step=200, start=0)
+mc_minw = pn.widgets.FloatInput(name="Backtrack min weight", value=0.0, step=0.01)
 
-show_mc = pn.widgets.Checkbox(name="Overlay MC truth segments", value=False)
-mc_max_segments = pn.widgets.IntInput(name="MC max segments", value=3000, step=500, start=0, width=140)
-mc_only_muons = pn.widgets.Checkbox(name="MC only muons (|pdg|=13)", value=False)
-mc_truth_event = pn.widgets.Select(name="MC truth event_id", options=["auto"], value="auto", width=220)
-mc_info = pn.pane.Markdown("", height=80, sizing_mode="stretch_width")
-mc_select_mode = pn.widgets.Select(
-    name="MC selection",
-    options=["backtrack (recommended)", "window (legacy)"],
-    value="backtrack (recommended)",
-    width=220,
-)
+# muon
+show_muon = pn.widgets.Checkbox(name="Show rock muon track", value=False)
 
-mc_hit_type = pn.widgets.Select(
-    name="Backtrack hit type",
-    options=["prompt", "final"],
-    value="prompt",
-    width=160,
-)
+# clustering
+show_clusters = pn.widgets.Checkbox(name="Enable DBSCAN clusters", value=False)
+db_eps = pn.widgets.FloatInput(name="DBSCAN eps [cm]", value=1.5, step=0.1)
+db_min = pn.widgets.IntInput(name="DBSCAN min_samples", value=10, step=1)
+cluster_min_hits = pn.widgets.IntInput(name="Keep nhits ≥", value=20, step=1)
+cluster_max_extent = pn.widgets.FloatInput(name="Keep max extent ≤ [cm]", value=8.0, step=0.5)
+clusters_info = pn.pane.Markdown("", height=180)
 
-mc_topk = pn.widgets.IntInput(
-    name="Backtrack top-K segments",
-    value=2000,
-    step=200,
-    start=0,
-    width=200,
-)
-
-mc_minw = pn.widgets.FloatInput(
-    name="Backtrack min weight",
-    value=0.0,
-    step=0.01,
-    width=160,
-)
-
-clusters_info = pn.pane.Markdown("", height=220, sizing_mode="stretch_width")
-clusters_box = pn.Column(clusters_info, height=240, scroll=True)
+view3d = pn.pane.Plotly(height=760, sizing_mode="stretch_both")
+view2d = pn.pane.Plotly(height=760, sizing_mode="stretch_both")
+view_analysis = pn.pane.Plotly(height=760, sizing_mode="stretch_both")
 
 
-view3d = pn.pane.Plotly(height=700,width=900)
-view2d = pn.pane.Matplotlib(height=520, tight=False)
+def _set_status(message: str, ok: bool = True):
+    icon = "✅" if ok else "❌"
+    status.object = f"### Status {icon}\n{message}"
 
-def _set_status(msg: str, ok: bool = True):
-    status.object = f"**Status:** {'✅' if ok else '❌'} {msg}"
 
-def _sync_slider():
+def _sync_slider_bounds():
     if state.flow is None:
-        event_slider.start = 0
-        event_slider.end = 0
-        event_slider.value = 0
+        event_slider.start = event_slider.end = event_slider.value = 0
+        event_input.value = 0
         return
-    n = state.flow.n_events()
-    event_slider.start = 0
-    event_slider.end = max(0, n-1)
-    event_slider.value = min(event_slider.value, event_slider.end)
-
-# --- sync slider <-> input (avoid infinite loop) ---
-_syncing = {"flag": False}
-
-def _sync_event_widgets(value):
-    if _syncing["flag"]:
-        return
-    _syncing["flag"] = True
-    try:
-        v = int(value)
-        v = max(event_slider.start, min(event_slider.end, v))
-        event_slider.value = v
-        event_input.value = v
-    finally:
-        _syncing["flag"] = False
-
-event_slider.param.watch(lambda e: _sync_event_widgets(e.new), "value")
-event_input.param.watch(lambda e: _sync_event_widgets(e.new), "value")
+    end = max(0, state.flow.n_events() - 1)
+    event_slider.start, event_slider.end = 0, end
+    event_slider.value = min(event_slider.value, end)
+    event_input.value = int(event_slider.value)
 
 
-def _goto_event(ev):
-    ev = int(ev)
-    ev = max(event_slider.start, min(event_slider.end, ev))
-    event_slider.value = ev  # triggers refresh
+def _goto_event(ev: int):
+    event_slider.value = max(event_slider.start, min(event_slider.end, int(ev)))
 
-def _next_clicked(_):
-    global muon_pos
+
+def _next_event(_=None):
     if state.flow is None:
         return
-
-    if muon_only.value and muon_indices:
-        # move to next muon event >= current+1
-        cur = int(event_slider.value)
-        # find insertion point
-        import bisect
-        muon_pos = bisect.bisect_right(muon_indices, cur)
-        if muon_pos >= len(muon_indices):
-            muon_pos = 0  # wrap
-        _goto_event(muon_indices[muon_pos])
+    if muon_only.value and state.muon_indices:
+        pos = bisect.bisect_right(state.muon_indices, int(event_slider.value))
+        _goto_event(state.muon_indices[pos % len(state.muon_indices)])
     else:
         _goto_event(int(event_slider.value) + 1)
 
-def _prev_clicked(_):
-    global muon_pos
+
+def _prev_event(_=None):
     if state.flow is None:
         return
-
-    if muon_only.value and muon_indices:
-        cur = int(event_slider.value)
-        import bisect
-        muon_pos = bisect.bisect_left(muon_indices, cur) - 1
-        if muon_pos < 0:
-            muon_pos = len(muon_indices) - 1  # wrap
-        _goto_event(muon_indices[muon_pos])
+    if muon_only.value and state.muon_indices:
+        pos = bisect.bisect_left(state.muon_indices, int(event_slider.value)) - 1
+        _goto_event(state.muon_indices[pos % len(state.muon_indices)])
     else:
         _goto_event(int(event_slider.value) - 1)
 
-next_btn.on_click(_next_clicked)
-prev_btn.on_click(_prev_clicked)
+
+def _selected_truth_event_id():
+    if truth_event.value == "auto":
+        return None
+    try:
+        return int(truth_event.value)
+    except Exception:
+        return None
+
+
+def _refresh_control_visibility():
+    truth_enabled = bool(show_truth.value)
+    truth_mode.visible = truth_enabled
+    truth_event.visible = truth_enabled and truth_mode.value == "window"
+    show_all_window_vertices.visible = truth_enabled and truth_mode.value == "window"
+    show_vertices.visible = truth_enabled
+    mc_only_muons.visible = truth_enabled
+    mc_max_segments.visible = truth_enabled
+    mc_topk.visible = truth_enabled and truth_mode.value == "backtrack"
+    mc_minw.visible = truth_enabled and truth_mode.value == "backtrack"
+
+    db_eps.visible = bool(show_clusters.value)
+    db_min.visible = bool(show_clusters.value)
+    cluster_min_hits.visible = bool(show_clusters.value)
+    cluster_max_extent.visible = bool(show_clusters.value)
+    clusters_info.visible = bool(show_clusters.value)
+
+
+def _compute_clusters(hits, muon_track):
+    if not show_clusters.value:
+        clusters_info.object = ""
+        return None
+    labels = muon_region_labels(hits, muon_track, r_core=5.0, r_near=25.0)
+    mask_far = labels == 2
+    clusters = dbscan_clusters(hits, eps_cm=float(db_eps.value), min_samples=int(db_min.value), mask=mask_far)
+    clusters = [c for c in clusters if c.n_hits >= int(cluster_min_hits.value) and c.extent_max_cm <= float(cluster_max_extent.value)]
+    if not clusters:
+        clusters_info.object = "**Clusters kept:** 0"
+        return []
+    lines = [f"- cluster {i}: nhits={c.n_hits}, sumQ={c.total_Q:.2g}, max={c.extent_max_cm:.2f} cm" for i, c in enumerate(clusters)]
+    theta_line = angle_to_z_of_centroid_line(clusters)
+    suffix = "\n\n**Centroid-line fit:** need ≥2 clusters"
+    if theta_line is not None:
+        suffix = f"\n\n**Centroid-line angle to z:** {theta_line * 180 / np.pi:.1f}°"
+    clusters_info.object = "**Clusters kept:**\n" + "\n".join(lines) + suffix
+    return clusters
+
+
+def _analysis_markdown(hits, clusters, truth_info):
+    lines = [
+        f"### Event analysis",
+        f"- hits: **{len(hits)}**",
+        f"- total Q: **{np.nansum(hits['Q'].astype(float)):.4g}**" if len(hits) else "- total Q: **0**",
+    ]
+    if clusters is None:
+        lines.append("- clusters: *(disabled)*")
+    else:
+        lines.append(f"- clusters kept: **{len(clusters)}**")
+        if len(clusters):
+            for i, c in enumerate(clusters[:8]):
+                lines.append(f"  - cluster {i}: nhits={c.n_hits}, sumQ={c.total_Q:.3g}, max_extent={c.extent_max_cm:.2f} cm")
+    if truth_info is None:
+        lines.append("- truth: *(disabled)*")
+    else:
+        lines.append(f"- truth mode: **{truth_info.get('selection','?')}**")
+        lines.append(f"- truth segments: **{truth_info.get('chosen_n_segments', 0)}**")
+        if truth_info.get("multi", False):
+            lines.append("- window has multiple truth event_ids")
+    return "\n".join(lines)
 
 
 def _refresh_views(*_):
+    _refresh_control_visibility()
     if state.flow is None:
         view3d.object = None
         view2d.object = None
         return
 
     ev = int(event_slider.value)
-    hits = state.flow.get_event_hits(ev)
+    event_input.value = ev
+    hits = state.flow.get_event_hits(ev, hit_type=hit_type.value)
+    muon_track = state.flow.get_muon_track_for_event(ev) if show_muon.value else None
 
-    muon_track = None
-    if bool(show_muon.value):
-        muon_track = state.flow.get_muon_track_for_event(ev)
+    clusters = _compute_clusters(hits, muon_track)
 
-    clusters = None
-    if bool(show_clusters.value):
-        # You can choose whether to require a muon track for clustering; I recommend yes
-        # if muon_track is None:
-        if False:
-            clusters = []
-            clusters_info.object = "**Clusters:** (no muon track in this event)"
-        else:
-            labs = muon_region_labels(hits, muon_track, r_core=5.0, r_near=25.0)
-            mask_far = (labs == 2)   # keep only hits outside the near/core region
-            clusters_all = dbscan_clusters(
-                hits,
-                eps_cm=float(db_eps.value),
-                min_samples=int(db_min.value),
-                mask=mask_far,
-            )
-
-            # filter “isolated-ish” clusters
-            clusters = []
-            for c in clusters_all:
-                if c.n_hits < int(cluster_min_hits.value):
-                    continue
-                if c.extent_max_cm > float(cluster_max_extent.value):
-                    continue
-                clusters.append(c)
-
-            # print summary
-            if clusters:
-                lines = [
-                    f"- cluster {i}: nhits={c.n_hits}, sumQ={c.total_Q:.2g}, max={c.extent_max_cm:.2f} cm"
-                    for i, c in enumerate(clusters)
-                ]
-                clusters_info.object = "**Clusters kept:**\n" + "\n".join(lines)
-            else:
-                clusters_info.object = "**Clusters kept:** 0"
-            
-            theta_line = angle_to_z_of_centroid_line(clusters)
-
-            if theta_line is None:
-                clusters_info.object += "\n\n**Centroid-line fit:** need ≥2 clusters"
-            else:
-                deg = theta_line * 180/np.pi
-                clusters_info.object += f"\n\n**Centroid-line angle to z:** {deg:.1f}°  (n_clusters={len(clusters)})"
-
-    mc_segments = None
-    mc_vertices = None
-    mc_overlay_info = None
-
-    if bool(show_mc.value):
-        if mc_select_mode.value.startswith("backtrack"):
-            mc_segments, mc_vertices, mc_overlay_info = state.flow.get_mc_overlay_for_charge_event_backtrack(
+    truth_segments, truth_vertices, truth_info = None, None, None
+    if show_truth.value:
+        truth_segments, truth_info = state.flow.get_truth_overlay(
+            ev,
+            mode=truth_mode.value,
+            hit_type=hit_type.value,
+            top_k_segments=int(mc_topk.value),
+            min_weight=float(mc_minw.value),
+            truth_event_id=_selected_truth_event_id(),
+            mc_only_muons=bool(mc_only_muons.value),
+        )
+        if show_vertices.value:
+            truth_vertices = state.flow.get_truth_vertices(
                 ev,
-                hit_type=str(mc_hit_type.value),
+                mode=truth_mode.value,
+                hit_type=hit_type.value,
                 top_k_segments=int(mc_topk.value),
                 min_weight=float(mc_minw.value),
-                mc_only_muons=bool(mc_only_muons.value),
+                truth_event_id=_selected_truth_event_id(),
+                include_all_window_vertices=bool(show_all_window_vertices.value),
             )
 
-            if mc_overlay_info is not None and not mc_overlay_info.get("missing", True):
-                mc_info.object = (
-                    f"**MC (backtrack):** hit_type=`{mc_overlay_info['hit_type']}`  \n"
-                    f"- hits: `{mc_overlay_info['n_hits']}`  \n"
-                    f"- bt rows used: `{mc_overlay_info['n_bt_rows']}`  \n"
-                    f"- unique segs: `{mc_overlay_info['n_unique_segments']}`  \n"
-                    f"- drawn segs: `{mc_overlay_info['chosen_n_segments']}`"
-                )
-            else:
-                mc_info.object = "**MC (backtrack):** *(none for this event)*"
-
-            # In backtrack mode, don’t use the truth_event dropdown
-            mc_truth_event.options = ["auto"]
-            mc_truth_event.value = "auto"
-
+        if truth_mode.value == "window":
+            ids = truth_info.get("truth_event_ids", []) if truth_info else []
+            truth_event.options = ["auto"] + [str(v) for v in ids]
+            if truth_event.value not in truth_event.options:
+                truth_event.value = "auto"
         else:
-            # legacy window-based mode (your existing selector)
-            chosen = None
-            if mc_truth_event.value != "auto":
-                try:
-                    chosen = int(mc_truth_event.value)
-                except Exception:
-                    chosen = None
+            truth_event.options = ["auto"]
+            truth_event.value = "auto"
 
-            mc_segments, mc_vertices, mc_overlay_info = state.flow.get_mc_overlay_for_charge_event(
-                ev, select="dominant", truth_event_id=chosen
-            )
-
-            if mc_overlay_info is not None and (not mc_overlay_info["missing"]):
-                ids = mc_overlay_info["truth_event_ids"]
-                opts = ["auto"] + [str(x) for x in ids]
-                mc_truth_event.options = opts
-                if mc_truth_event.value not in opts:
-                    mc_truth_event.value = "auto"
-
-                chosen_id = mc_overlay_info["chosen_event_id"]
-                if mc_overlay_info["multi"]:
-                    mc_info.object = (
-                        f"**MC (window):** ⚠ multi event_id in charge window  \n"
-                        f"- available: `{ids}`  \n"
-                        f"- chosen: `{chosen_id}`"
-                    )
-                else:
-                    mc_info.object = f"**MC (window):** event_id `{chosen_id}`"
-            else:
-                mc_truth_event.options = ["auto"]
-                mc_truth_event.value = "auto"
-                mc_info.object = "**MC (window):** *(none for this event)*"
-    else:
-        mc_info.object = ""
-
-    mc_label = "MC truth segments"
-    if mc_overlay_info is not None and not mc_overlay_info.get("missing", True):
-        if mc_overlay_info.get("selection") == "backtrack":
-            mc_label = f"MC segments (backtrack, {mc_overlay_info.get('hit_type','?')})"
+    truth_summary = "truth overlay off"
+    if truth_info is not None:
+        if truth_info.get("missing", True):
+            truth_summary = f"{truth_mode.value}: missing"
         else:
-            chosen = mc_overlay_info.get("chosen_event_id", None)
-            if chosen is not None:
-                mc_label = f"MC segments (event_id {chosen})"
-            if mc_overlay_info.get("multi", False):
-                mc_label += " [multi]"
+            truth_summary = f"{truth_mode.value}: segs={truth_info.get('chosen_n_segments', 0)}"
+            if truth_info.get("multi", False):
+                truth_summary += " (multi-window)"
 
     fig3d = make_plotly_3d(
         hits,
-        color_mode=str(color_mode.value),
+        color_mode=color_mode.value,
         max_hits=int(max_hits.value),
         point_size=int(point_size.value),
         show_boxes=bool(show_boxes.value),
         muon_track=muon_track,
         clusters=clusters,
-        mc_segments=mc_segments,
-        mc_vertices=mc_vertices,
+        mc_segments=truth_segments,
+        mc_vertices=truth_vertices,
         mc_max_segments=int(mc_max_segments.value),
         mc_only_muons=bool(mc_only_muons.value),
-        mc_label=mc_label,
+        mc_label=f"MC segments ({truth_mode.value})",
     )
-    fig2d = make_matplotlib_figure(
+    fig2d = make_plotly_2d_projections(
         hits,
-        color_mode=str(color_mode.value),
+        color_mode=color_mode.value,
         max_hits=int(max_hits.value),
-        point_size=int(point_size.value),
-        show_boxes=bool(show_boxes.value),
-        muon_track=muon_track
+        point_size=max(2, int(point_size.value)),
+        muon_track=muon_track,
     )
+    fig_analysis = make_plotly_analysis(hits, clusters=clusters)
 
     view3d.object = fig3d
     view2d.object = fig2d
-    import matplotlib.pyplot as plt
-    plt.close(fig2d)
+    view_analysis.object = pn.Column(
+        pn.pane.Markdown(_analysis_markdown(hits, clusters, truth_info), sizing_mode="stretch_width"),
+        pn.pane.Plotly(fig_analysis, height=450, sizing_mode="stretch_width"),
+    )
+    _set_status(
+        f"**File:** `{os.path.basename(state.path)}`  \n"
+        f"**Event:** `{ev}`  \n"
+        f"**Hit type:** `{hit_type.value}`  \n"
+        f"**N hits:** `{len(hits)}`  \n"
+        f"**Truth:** {truth_summary}",
+        ok=True,
+    )
 
-    # event quick summary
-    try:
-        nh = len(hits)
-        _set_status(f"Opened {os.path.basename(state.path)} | event {ev} | nhits={nh}")
-    except Exception:
-        _set_status("Loaded event", ok=True)
 
-def _open_clicked(_):
+def _open_file(_=None):
     path = file_input.value.strip()
     if not path:
         state.close()
-        _sync_slider()
+        _sync_slider_bounds()
         _set_status("No file path provided.", ok=False)
         return
     if not os.path.exists(path):
-        _set_status(f"File not found: {path}", ok=False)
+        _set_status(f"File not found: `{path}`", ok=False)
         return
     try:
         state.open(path)
-        _sync_slider()
+        _sync_slider_bounds()
         _refresh_views()
-        global muon_indices, muon_pos
-        muon_indices = state.flow.muon_event_indices() if state.flow is not None else []
-        muon_pos = 0
-    except Exception as e:
-        _set_status(f"Failed to open file: {e}", ok=False)
+    except Exception as exc:
+        _set_status(f"Failed to open file: `{exc}`", ok=False)
 
-open_btn.on_click(_open_clicked)
 
-# reactive callbacks
-for w in [event_slider, color_mode, max_hits, point_size, show_boxes, show_muon,
-          show_clusters, db_eps, db_min, cluster_min_hits, cluster_max_extent, show_mc, mc_max_segments, mc_only_muons, mc_truth_event, mc_select_mode, mc_hit_type, mc_topk, mc_minw]:
-    w.param.watch(lambda *_: _refresh_views(), 'value')
+# ---------- callbacks ----------
+open_btn.on_click(_open_file)
+next_btn.on_click(_next_event)
+prev_btn.on_click(_prev_event)
 
-# initial
-_sync_slider()
+event_slider.param.watch(lambda e: _goto_event(e.new), "value")
+event_input.param.watch(lambda e: _goto_event(e.new), "value")
+
+for w in [
+    event_slider,
+    hit_type,
+    color_mode,
+    max_hits,
+    point_size,
+    show_boxes,
+    show_muon,
+    show_truth,
+    truth_mode,
+    truth_event,
+    show_vertices,
+    show_all_window_vertices,
+    mc_only_muons,
+    mc_max_segments,
+    mc_topk,
+    mc_minw,
+    show_clusters,
+    db_eps,
+    db_min,
+    cluster_min_hits,
+    cluster_max_extent,
+]:
+    w.param.watch(_refresh_views, "value")
+
+_sync_slider_bounds()
+_refresh_control_visibility()
 if state.flow is not None:
     _refresh_views()
 else:
-    _set_status("Provide an HDF5 path and click Open.", ok=True)
+    _set_status("Provide an HDF5 path and click **Open**.")
 
-controls = pn.Card(
+navigation_card = pn.Card(pn.Row(prev_btn, next_btn), muon_only, event_slider, event_input, title="Navigation", collapsed=False)
+display_card = pn.Card(hit_type, color_mode, max_hits, point_size, show_boxes, title="Display options", collapsed=False)
+truth_card = pn.Card(
+    show_truth,
+    truth_mode,
+    truth_event,
+    show_vertices,
+    show_all_window_vertices,
+    mc_only_muons,
+    mc_max_segments,
+    mc_topk,
+    mc_minw,
+    title="Truth overlay",
+    collapsed=False,
+)
+cluster_card = pn.Card(show_clusters, db_eps, db_min, cluster_min_hits, cluster_max_extent, clusters_info, title="Clustering", collapsed=True)
+muon_card = pn.Card(show_muon, title="Muon track", collapsed=True)
+
+sidebar = pn.Column(
     pn.Row(file_input, open_btn),
     status,
-    pn.layout.Divider(),
-    pn.Row(event_slider, event_input),
-    pn.Row(color_mode, max_hits),
-    pn.Row(point_size),
-    pn.Row(show_boxes, show_muon),
-    pn.layout.Divider(),
-    pn.Row(pn.Spacer(), prev_btn, muon_only, next_btn, pn.Spacer()),
-    pn.layout.Divider(),
-    pn.Row(show_mc),
-    pn.Row(mc_select_mode),
-    pn.Row(mc_max_segments, mc_only_muons),
-    pn.Row(mc_hit_type, mc_topk),
-    pn.Row(mc_minw),
-    pn.Row(mc_truth_event),   # only meaningful in legacy mode
-    mc_info,   
-    pn.layout.Divider(),
-    pn.Row(show_clusters),
-    pn.Row(db_eps, db_min),
-    pn.Row(cluster_min_hits, cluster_max_extent),
-    clusters_box,
-    title="Controls",
-    collapsed=False
+    navigation_card,
+    display_card,
+    truth_card,
+    cluster_card,
+    muon_card,
+    width=420,
+    sizing_mode="stretch_height",
 )
 
-layout = pn.Row(
-    pn.Column(controls, width=500),
-    pn.Column(
-        pn.Tabs(
-            ("3D", view3d),
-            ("2D", view2d),
-            active=0
-        ),
-        sizing_mode="stretch_width"
-    ),
-    sizing_mode="stretch_width"
-)
-
-# Panel looks for a variable named 'servable'
+main_tabs = pn.Tabs(("3D", view3d), ("2D", view2d), ("Analysis", view_analysis), dynamic=True)
+layout = pn.Row(sidebar, main_tabs, sizing_mode="stretch_both")
 layout.servable(title="2x2 Event Display")
-    
