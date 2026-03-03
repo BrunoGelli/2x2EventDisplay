@@ -12,6 +12,7 @@ import os
 
 import numpy as np
 import panel as pn
+import plotly.graph_objects as go
 
 from twobytwo_display.clustering import angle_to_z_of_centroid_line, dbscan_clusters
 from twobytwo_display.io import FlowFile
@@ -269,7 +270,7 @@ def _refresh_views(*_):
             if truth_info.get("multi", False):
                 truth_summary += " (multi-window)"
 
-    fig3d = make_plotly_3d(
+    fig3d = viz.make_plotly_3d(
         hits,
         color_mode=color_mode.value,
         max_hits=int(max_hits.value),
