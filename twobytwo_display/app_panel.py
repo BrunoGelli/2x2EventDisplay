@@ -261,6 +261,7 @@ def _refresh_views(*_):
         point_size=max(2, int(point_size.value)),
         muon_track=muon_track,
     )
+    fig_analysis = make_plotly_analysis(hits, clusters=clusters)
 
     view3d.object = fig3d
     view2d.object = fig2d

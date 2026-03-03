@@ -138,6 +138,7 @@ def make_plotly_3d(
             m = labels == lab
             fig.add_trace(go.Scatter3d(x=hits["z"][m], y=hits["x"][m], z=hits["y"][m], mode="markers", marker=dict(size=point_size, color=col), name=name))
     else:
+        customdata = np.stack([hits["Q"].astype(float)], axis=1)
         fig.add_trace(go.Scatter3d(
             x=hits["z"], y=hits["x"], z=hits["y"], mode="markers", name="hits",
             marker=dict(size=point_size, color=c, colorscale="Viridis", showscale=True, colorbar=dict(title=clabel)),
