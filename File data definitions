@@ -1,0 +1,216 @@
+File data definitions
+Matt Kramer edited this page on Nov 8, 2025 · 20 revisions
+This page documents the file data definition for MiniRun4. The units and the data content may have been updated since the previous MiniRun's and the module0_flow processed Bern data. The intention of this page is to document the latest file data definition in the simulation and data, which should be relatively static from MiniRun4 onwards.
+
+MC Truth
+The MC truth is organized as two datasets: one for event summary information (the mc_hdr) and one for the particle stack (the mc_stack). This is a short explanation of the variables in each and their units (if applicable). The MC truth datasets are introduced in this form starting with the HDF5 converted edep-sim files and are the same for larndsim and ndflow output (although might have a different top-level name). Currently the MC simulation only uses GENIE as the event generator.
+
+Event summary info (mc_hdr)
+There is one entry per GENIE interaction in the array.
+
+event_id: unique ID for an interesting window of time; for beam events this corresponds to a spill
+vertex_id: the vertex ID number, corresponds to an individual generator interaction
+vertex: the position of the interaction vertex (x,y,z,t) in [cm]
+target: the Z value of the struck nucleus
+reaction: an integer enumeration for the different GENIE reactions. Positive int for neutrino, negative int for anti-neutrino events. Some numbers reserved for future use.
+QES       : 1
+1Kaon     : 2
+DIS       : 3
+RES       : 4
+COH       : 5
+DFR       : 6
+NuEEL     : 7
+IMD       : 8
+AMNuGamma : 9
+MEC       : 10
+CEvNS     : 11
+IBD       : 12
+GLR       : 13
+IMDAnh    : 14
+PhotonCOH : 15
+PhotonRES : 16
+1Pion     : 17
+DMEL      : 101
+DMDIS     : 102
+DME       : 103
+isCC: True if charged-current event, False if neutral-current event
+isXYZ: boolean flags for identifying interaction types, which come from the GENIE reaction string, and are mutually exclusive; currently supported types:
+isQES: quasi-elastic
+isMEC: meson-exchange current (also known as multi-nucleon)
+isRES: resonant pion production
+isDIS: deep inelastic scattering
+isCOH: coherent scattering
+Enu: incident neutrino energy in [MeV]
+nu_4mom: incident neutrino 4-momentum vector (px, py, pz, E) in [MeV]
+nu_pdg: incident neutrino PDG code
+Elep: outgoing lepton energy in [MeV]
+lep_mom: outgoing lepton momentum in [MeV]
+lep_ang: angle between the outgoing lepton and the neutrino beam direction in [degrees]
+lep_pdg: outgoing lepton PDG code
+q0: energy transfer in [MeV]
+q3: magnitude of the momentum transfer in [MeV]
+Q2: 4-momentum transfer squared in [MeV^2]
+x: bjorken x, defined as Q^2 / (2 * nucleon_mass * q0) where the nucleon mass is simply the proton mass
+y: inelasticity y, defined as 1 - (Elep / Enu)
+Particle stack (mc_stack)
+There is one entry per particle in the array. Match event_id to find all the particles for a given interaction across different array entries. Currently only contains the initial and final state particles for the interaction.
+
+event_id: unique ID for an interesting window of time; for beam events this corresponds to a spill
+vertex_id: the vertex ID number, corresponds to an individual generator interaction
+traj_id: the edep-sim trajectory ID that corresponds to this MC particle; otherwise -999 if no matching trajectory
+part_4mom: the particle 4-momentum vector (px, py, pz, E) in [MeV]
+part_pdg: the particle PDG code
+part_status: 0 if initial state particle, 1 if final state particle (as defined by GENIE)
+Vertex/event ID cheatsheet
+For a MiniRun (i.e. beam) file, in the truth datasets, the event_id is the true beam spill ID, defined as
+
+1e3*file_number + (0, 1, 2...)
+The vertex_id is more complicated, and is defined roughly as:
+
+1e15*(1 if from_rock_generator else 0) + 1e7*file_number + (0, 1, 2...)
+More precisely it's
+
+1e15*(1 if from_rock_generator else 0) + 1e6*genie_file_number + (0, 1, 2...)
+For file number 123, the GENIE file numbers are 1230, 1231, ..., 1239, since we merge 20 GENIE/Geant files (10 rock + 10 "fiducial") into each downstream file.
+
+edep-sim Truth
+The edep-sim truth information is organized as two datasets: one for the true particle trajectories and one for the true energy deposits/segments. These datasets are introduced in this form starting with the HDF5 converted edep-sim files and have the same structure for larndsim and ndflow output (although might have a different top-level name). Both datasets are a near one-to-one translation from the edep-sim ROOT data structures.
+
+trajectories
+These are the true particle trajectories (or paths) through the detector for all particles, both neutral and charged, excluding the incident neutrino. Each true particle may have multiple trajectories if the trajectory was split/broken by edep-sim with each having their own unique track ID.
+
+event_id: unique ID for an interesting window of time; for beam events this corresponds to a spill
+vertex_id: the vertex ID number, corresponds to an individual generator interaction
+traj_id: the original edep-sim trajectory (track) ID, not unique within a file, guaranteed to be unique for each vertex
+file_traj_id: the trajectory id that is unique within a file
+parent_id: the trajectory (track) ID of the parent trajectory, if the trajectory is a primary particle the ID is -1
+E_start: the total energy in [MeV] at the start of the trajectory
+pxyz_start: the momentum 3-vector (px, py, pz) in [MeV] at the start of the trajectory
+xyz_start: the start position 3-vector (x, y, z) in [cm] of the trajectory (specifically the position of the first trajectory point)
+t_start: the start time of the trajectory in [us]
+E_end: the total energy in [MeV] at the end of the trajectory
+pxyz_end: the momentum 3-vector (px, py, pz) in [MeV] at the end of the trajectory
+xyz_end: the end position 3-vector (x, y, z) in [cm] of the trajectory (specifically the position of the last trajectory point)
+t_end: the end time of the trajectory in [us]
+pdg_id: the PDG code of the particle
+start_process: physics process for the start of the trajectory as defined by GEANT4
+start_subprocess: physics subprocess for the start of the trajectory as defined by GEANT4
+end_process: physics process for the end of the trajectory as defined by GEANT4
+end_subprocess: physics subprocess for the end of the trajectory as defined by GEANT4
+See the enums in the edep-sim TG4Trajectory.h (or GEANT4 docs) for process and subprocess codes.
+
+segments (previously tracks)
+These are the true energy deposits (or energy segments) for active parts of the detector from edep-sim. Each segment corresponds to some amount of energy deposited over some distance. Some variables are filled during the larndsim stage of processing.
+
+event_id: unique ID for an interesting window of time; for beam events this corresponds to a spill
+vertex_id: the vertex ID number, corresponds to an individual generator interaction
+segment_id: the segment ID number
+traj_id: the original edep-sim trajectory (track) ID of the trajectory that created this energy deposit, not unique within a file, guaranteed to be unique for each vertex
+x_start: the x start position [cm]
+y_start: the y start position [cm]
+z_start: the z start position [cm]
+t0_start: the start time [us]
+x_end: the x end position [cm]
+y_end: the y end position [cm]
+z_end: the z end position [cm]
+t0_end: the end time [us]
+x: the x mid-point of the segment [cm] -> (x_start + x_end) / 2
+y: the y mid-point of the segment [cm] -> (y_start + y_end) / 2
+z: the z mid-point of the segment [cm] -> (z_start + z_end) / 2
+t0: the time mid-point [us] -> (t0_start + t0_end) / 2
+pdg_id: PDG code of the particle that created this energy deposit
+dE: the energy deposited in this segment [MeV]
+dx: the length of this segment [cm]
+dEdx: the calculated energy per length [MeV/cm]
+tran_diff: (ADD INFO)
+long_diff: (ADD INFO)
+n_electrons: (ADD INFO)
+n_photons: (ADD INFO)
+pixel_plane: (ADD INFO)
+t/t_start/t_end: arrival time regarding to t0 -- event start time (including the beam width or cosmic time offset etc), filled in larnd-sim. Note t_start/t_end is the early/late end of the segment, which doesn't necessarily correspond to the t0/x/y/z_start and t0/x/y/z_end.
+ndlar-flow output
+The final stage of the 2x2 simulation before reconstruction is the flow output. It contains charge and light datasets for the events and includes the same MC truth information as described above.
+
+Several variables for charge or light data use ticks as a unit where the tick rate is different between charge and light readout. The clock rates in the current configuration are:
+
+Charge: 10 MHz --> 0.1 us (microseconds) per tick
+Light : 62 MHz --> 0.016 us (microseconds) per tick
+/light/events
+id : u8, unique identifier per event
+event : i4, event number from source ROOT file
+sn : i4(n_adc), serial number of ADC
+utime_ms : u8(n_adc), unix time since epoch [ms]
+tai_ns : u8(n_adc), WR ns timestamp [ns]
+wvfm_valid : u1(n_adc, n_ch_adc), boolean indicator if channel is present in event
+/light/wvfm
+sample : i2(n_adc, n_channels, n_samples), sample 14-bit ADC value
+/light/sipm_hits and /light/sum_hits
+id : u4, unique identifier
+adc_id / tpc : u1, adc / tpc index for sipm_hits / sum_hits
+chan / det : u1, channel / detector index for sipm_hits / sum_hits
+pos / boundary: f4(3) / f4(3,2), (x,y,z) center of sipm / ((xmin,xmax), (ymin,ymax), (zmin,zmax)) boundary of detector sensitive surface
+sample_idx : u2, sample index of peak within waveform
+ns : f8, WR timestamp of waveform [ns]
+busy_ns : f8, timestamp of peak relative to trigger [ns]
+samples : f4(2*near+1,), sample value around peak
+sum : f4, sum of sample values (out to +/- near_samples)
+max : f4, peak value
+sum_spline : f4, integral of spline around peak (out to +/- near_samples)
+max_spline : f4, maximum of spline around peak
+ns_spline : f4, offset from center sample for maximum of spline [ns]
+rising_spline : f4, projection of spline to rising edge zero-crossing (offset from center sample) [ns]
+rising_err_spline : f4, an estimate of the error on the rising edge zero-crossing [ns]
+fwhm_spline : f4, spline FWHM [ns]
+/charge/calib_prompt_hits
+x : f8, pixel x location [cm]
+y : f8, pixel y location [cm]
+z : f8, pixel z location [cm]
+t_drift : f8, drift time [ticks] (uses u8 in doc string)
+ts_pps : u8, PPS packet timestamp [ticks] (uses f8 in doc string)
+io_group : u8, io group ID (PACMAN number)
+io_channel u8, io channel ID (related to PACMAN number & PACMAN UART Number)
+Q : f8, hit charge [ke-]
+E : f8, hit energy [MeV]
+/charge/events
+id : u8, unique identifier per event
+nhit : u4, number of hits in event
+ADC : f8, total charge in event [mV] (labelled q in doc string)
+ts_start : f8, first external trigger or hit corrected PPS timestamp [ticks]
+ts_end : f8, last external trigger of hit corrected PPS timestamp [ticks]
+n_ext_trigs : u4, number of external triggers in event
+unix_ts : u8, unix timestamp of event [s since epoch]
+/charge/ext_trigs
+id : u8, unique identifier per event
+ts : f8, corrected PPS timestamp [ticks]
+ts_raw : u8, PPS timestamp [ticks]
+type : i2, trigger type from PACMAN
+iogroup : u1, PACMAN id
+/charge/packets
+For packet info, right now redirect to: https://larpix-control.readthedocs.io/en/stable/api/format/hdf5format.html
+
+/charge/raw_events
+id : u8, unique event identifier
+unix_ts : u8, unix timestamp of event [s since epoch]
+/charge/raw_hits
+x_pix : f8, pixel x location [cm]
+y_pix : f8, pixel y location [cm]
+z_pix : f8, pixel z location [cm]
+ts_pps : u8, PPS packet timestamp [ticks]
+ADC : u1, hit charge [ADC]
+/combined/t0
+id : u4, unique identifier
+ts : f8, PPS timestamp to be used for T0 [crs ticks]
+ts_err : f8, estimated error on T0 [crs ticks]
+type : u1, type indicator for T0 algorithm used, see attr. type_lookup for value definitions
+Patch Notes
+Changes for MiniRun5
+Addition of position / boundary for light sipm / sum hits
+Better descriptive variable names for light datasets (adc_id and chan)
+Add io_group and io_channel to various hit datasets
+Further standardize units to use cm for position(s)
+Changes for MiniRun4
+Change tracks dataset to segments (larndsim/flow output)
+Change genie_hdr and genie_stack to mc_hdr and mc_stack (all output)
+Standardize ID variables to be snake_case (varID to var_id) (all output)
+Change trackID to traj_id to improve clarity (all output)
+Add reaction code for identifying MC interaction types (all output)
