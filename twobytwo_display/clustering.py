@@ -14,31 +14,10 @@ except ImportError as e:
 class ClusterSummary:
     label: int
     n_hits: int
-    centroid: np.ndarray          # (3,)
-    direction: np.ndarray         # (3,) unit vector (PCA main axis)
-    theta_z_rad: float
+    centroid: np.ndarray
     total_Q: float
     extent_rms_cm: float
     extent_max_cm: float
-
-
-def _pca_line_direction(X: np.ndarray) -> np.ndarray:
-    """
-    X: (N,3) centered coordinates.
-    Returns: unit vector of largest-variance direction.
-    """
-    # SVD on centered coords: X = U S Vt; principal axis is Vt[0]
-    _, _, vt = np.linalg.svd(X, full_matrices=False)
-    v = vt[0]
-    # normalize (should already be)
-    v = v / np.linalg.norm(v)
-    return v
-
-
-def _angle_to_z(v: np.ndarray) -> float:
-    # angle to +z axis; use abs so up/down gives same theta
-    vz = float(np.clip(abs(v[2]), 0.0, 1.0))
-    return float(np.arccos(vz))
 
 
 def dbscan_clusters(
@@ -49,23 +28,72 @@ def dbscan_clusters(
     use_charge_weight: bool = False,
     q_field: str = "Q",
     mask: Optional[np.ndarray] = None,
+    debug: bool = False,
 ) -> List[ClusterSummary]:
-    """
-    Cluster hits in (x,y,z) using DBSCAN and compute PCA line + angle to z.
-    `hits` is your calib_prompt_hits structured array with fields x,y,z, Q.
-    """
+
     if len(hits) == 0:
+        if debug: print("[DBSCAN] hits is empty (len=0)")
         return []
 
     if mask is None:
         mask = np.ones(len(hits), dtype=bool)
+
+    if debug:
+        print(f"[DBSCAN] total hits: {len(hits)}  mask kept: {int(mask.sum())}")
+
     hits = hits[mask]
     if len(hits) == 0:
+        if debug: print("[DBSCAN] after mask: 0 hits")
         return []
+
+    # Check fields exist
+    for f in ["x", "y", "z"]:
+        if f not in hits.dtype.names:
+            raise ValueError(f"[DBSCAN] hits is missing field '{f}'. Available: {hits.dtype.names}")
 
     xyz = np.vstack([hits["x"], hits["y"], hits["z"]]).T.astype(np.float32)
 
+    # Basic sanity checks
+    finite = np.isfinite(xyz).all(axis=1)
+    if debug:
+        print(f"[DBSCAN] finite xyz: {int(finite.sum())}/{len(xyz)}")
+        if finite.sum() < len(xyz):
+            bad = np.where(~finite)[0][:5]
+            print("[DBSCAN] example bad rows:", xyz[bad])
+
+    xyz = xyz[finite]
+    if len(xyz) == 0:
+        if debug: print("[DBSCAN] all xyz were non-finite after filtering")
+        return []
+
+    if debug:
+        mins = xyz.min(axis=0); maxs = xyz.max(axis=0)
+        spans = maxs - mins
+        print(f"[DBSCAN] xyz min: {mins}  max: {maxs}  span: {spans}")
+        # Typical nearest-neighbor scale hint
+        if len(xyz) >= 2:
+            # cheap-ish: sample a subset if huge
+            M = min(len(xyz), 2000)
+            samp = xyz[np.random.choice(len(xyz), size=M, replace=False)]
+            # compute nearest neighbor distance approx
+            # (O(M^2) but M<=2000 => ok-ish; if too slow drop to 800)
+            d2 = ((samp[:, None, :] - samp[None, :, :])**2).sum(axis=2)
+            np.fill_diagonal(d2, np.inf)
+            nn = np.sqrt(d2.min(axis=1))
+            print(f"[DBSCAN] approx NN dist: median={np.median(nn):.3g}, p90={np.percentile(nn,90):.3g}")
+
     labels = DBSCAN(eps=eps_cm, min_samples=min_samples).fit_predict(xyz)
+
+    if debug:
+        n_noise = int(np.sum(labels == -1))
+        labs = sorted(set(labels))
+        print(f"[DBSCAN] labels: {labs[:10]}{'...' if len(labs)>10 else ''}")
+        print(f"[DBSCAN] noise points: {n_noise}/{len(labels)}")
+        # cluster sizes
+        for lab in sorted(set(labels)):
+            if lab == -1: 
+                continue
+            print(f"[DBSCAN] cluster {lab}: n={int(np.sum(labels==lab))}")
 
     out: List[ClusterSummary] = []
     for lab in sorted(set(labels)):
@@ -75,7 +103,7 @@ def dbscan_clusters(
         m = labels == lab
         pts = xyz[m]
         n = int(pts.shape[0])
-        if n < 2:
+        if n < 1:
             continue
 
         # centroid
@@ -89,10 +117,9 @@ def dbscan_clusters(
         else:
             centroid = pts.mean(axis=0)
 
+        # centroid computed above...
         centered = pts - centroid[None, :]
-        v = _pca_line_direction(centered)
-        theta = _angle_to_z(v)
-
+        
         # extents
         r = np.linalg.norm(centered, axis=1)
         extent_rms = float(np.sqrt(np.mean(r**2)))
@@ -104,11 +131,30 @@ def dbscan_clusters(
             label=int(lab),
             n_hits=n,
             centroid=centroid.astype(float),
-            direction=v.astype(float),
-            theta_z_rad=theta,
             total_Q=total_Q,
             extent_rms_cm=extent_rms,
             extent_max_cm=extent_max,
         ))
 
     return out
+
+def angle_to_z_of_centroid_line(clusters) -> float | None:
+    """
+    Fit a line to cluster centroids (PCA) and return angle to +z in radians.
+    Returns None if fewer than 2 clusters.
+    """
+    if clusters is None or len(clusters) < 2:
+        return None
+
+    P = np.array([c.centroid for c in clusters], dtype=float)  # (K,3)
+    x0 = P.mean(axis=0)
+    X = P - x0[None, :]
+
+    # PCA via SVD
+    _, _, vt = np.linalg.svd(X, full_matrices=False)
+    v = vt[0]
+    v = v / np.linalg.norm(v)
+
+    # angle to z (same convention you used elsewhere: up/down treated same)
+    vz = float(np.clip(abs(v[2]), 0.0, 1.0))
+    return float(np.arccos(vz))

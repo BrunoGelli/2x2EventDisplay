@@ -261,7 +261,12 @@ def make_plotly_3d(
     muon_track=None,
     r_core=5.0,
     r_near=25.0, 
-    clusters=None
+    clusters=None,
+    mc_segments=None,
+    mc_vertices=None,
+    mc_max_segments=3000,
+    mc_only_muons=False,
+    mc_label="MC truth segments",
 ):
     if len(hits) == 0:
         fig = go.Figure()
@@ -302,7 +307,13 @@ def make_plotly_3d(
                 color=c,
                 colorscale="Viridis",
                 showscale=True,
-                colorbar=dict(title=clabel),
+                colorbar=dict(
+                    title=clabel,
+                    len=0.65,          # <-- 65% of figure height
+                    y=0.45,            # <-- slightly lower than center
+                    yanchor="top",
+                    thickness=18,      # <-- slimmer bar
+                ),
             ),
             name="hits",
         ))
@@ -352,44 +363,114 @@ def make_plotly_3d(
 
     # ----------------------------
     # Cluster overlays (optional)
+    #   - centroid markers always
+    #   - ONE fitted line through centroids if >= 2 clusters (scenario 2)
     # ----------------------------
     if clusters:
-        # show a line of fixed length around each centroid
-        L = 20.0  # cm (tune or expose as UI control)
-
+        # --- centroid markers ---
         for ci, csum in enumerate(clusters):
             cen = np.asarray(csum.centroid, dtype=float)
-            v = np.asarray(csum.direction, dtype=float)
-            a = cen - L * v
-            b = cen + L * v
 
-            # Fitted axis line
+            fig.add_trace(go.Scatter3d(
+                x=[cen[2]], y=[cen[0]], z=[cen[1]],  # (z,x,y)
+                mode="markers",
+                marker=dict(size=7),
+                name=f"cluster {ci} centroid",
+                showlegend=True if ci == 0 else False,  # avoid legend spam
+                hoverinfo="text",
+                text=[(
+                    f"cluster {ci} centroid<br>"
+                    f"nhits={csum.n_hits}<br>"
+                    f"sumQ={csum.total_Q:.2g}<br>"
+                    f"rms={csum.extent_rms_cm:.2f} cm<br>"
+                    f"max={csum.extent_max_cm:.2f} cm"
+                )],
+            ))
+
+        # --- fitted centroid line (only if >= 2 clusters) ---
+        if len(clusters) >= 2:
+            P = np.array([c.centroid for c in clusters], dtype=float)  # (K,3)
+
+            # Best-fit line direction via PCA on centroids (works for K=2 too)
+            x0 = P.mean(axis=0)
+            X = P - x0[None, :]
+            _, _, vt = np.linalg.svd(X, full_matrices=False)
+            v = vt[0]
+            v = v / np.linalg.norm(v)
+
+            # Choose a segment that spans the centroids along the fitted direction
+            t = X @ v
+            t0, t1 = float(np.min(t)), float(np.max(t))
+            pad = 10.0  # cm padding on both ends (tune)
+            a = x0 + (t0 - pad) * v
+            b = x0 + (t1 + pad) * v
+
+            # Angle to z (treat up/down as same)
+            vz = float(np.clip(abs(v[2]), 0.0, 1.0))
+            theta_deg = float(np.degrees(np.arccos(vz)))
+
             fig.add_trace(go.Scatter3d(
                 x=[a[2], b[2]], y=[a[0], b[0]], z=[a[1], b[1]],  # (z,x,y)
                 mode="lines",
-                line=dict(width=6),
-                name=f"cluster {ci} axis",
+                line=dict(width=7),
+                name="centroid-line fit",
                 showlegend=True,
                 hoverinfo="text",
-                text=[f"cluster {ci}: theta_z={csum.theta_z_rad*180/np.pi:.1f} deg, nhits={csum.n_hits}"]*2,
+                text=[f"centroid-line fit<br>n_clusters={len(clusters)}<br>theta_z={theta_deg:.1f}°"] * 2,
             ))
 
-            # Cluster centroid marker
+    # ----------------------------
+    # MC truth overlay (segments + optional vertices)
+    # ----------------------------
+    if mc_segments is not None:
+        segs = mc_segments
+
+        if mc_only_muons and "pdg_id" in segs.dtype.names:
+            segs = segs[np.abs(segs["pdg_id"].astype(int)) == 13]
+
+        # downsample if too many segments (keeps UI responsive)
+        if mc_max_segments and len(segs) > mc_max_segments:
+            idx = np.random.choice(len(segs), size=mc_max_segments, replace=False)
+            segs = segs[idx]
+
+        if len(segs) > 0:
+            # Plotly line segments: use None separators to break lines
+            xline, yline, zline = [], [], []
+            hover = []
+            for s in segs:
+                # stored as (x_start,y_start,z_start) and (x_end,y_end,z_end)
+                A = (float(s["x_start"]), float(s["y_start"]), float(s["z_start"]))
+                B = (float(s["x_end"]),   float(s["y_end"]),   float(s["z_end"]))
+                pdg = int(s["pdg_id"]) if "pdg_id" in segs.dtype.names else 0
+                dE  = float(s["dE"]) if "dE" in segs.dtype.names else float("nan")
+                xline += [A[2], B[2], None]  # z -> plotly x
+                yline += [A[0], B[0], None]  # x -> plotly y
+                zline += [A[1], B[1], None]  # y -> plotly z
+                hover += [f"pdg={pdg}<br>dE={dE:.3g}", f"pdg={pdg}<br>dE={dE:.3g}", None]
+
             fig.add_trace(go.Scatter3d(
-                x=[cen[2]], y=[cen[0]], z=[cen[1]],
-                mode="markers",
-                marker=dict(size=6),
-                name=f"cluster {ci} centroid",
-                showlegend=False,
+                x=xline, y=yline, z=zline,
+                mode="lines",
+                line=dict(width=4),
+                name=mc_label,
+                opacity=0.7,
                 hoverinfo="text",
-                text=[f"cluster {ci} centroid<br>"
-                      f"nhits={csum.n_hits}<br>"
-                      f"sumQ={csum.total_Q:.2g}<br>"
-                      f"rms={csum.extent_rms_cm:.2f} cm<br>"
-                      f"max={csum.extent_max_cm:.2f} cm<br>"
-                      f"theta_z={csum.theta_z_rad*180/np.pi:.2f} deg"],
+                text=hover,
             ))
 
+    if mc_vertices is not None and len(mc_vertices) > 0:
+        # Vertex is stored as a (4,) array in field 'vertex': (x,y,z,t) usually
+        vx = mc_vertices["vertex"][:, 0].astype(float)
+        vy = mc_vertices["vertex"][:, 1].astype(float)
+        vz = mc_vertices["vertex"][:, 2].astype(float)
+
+        fig.add_trace(go.Scatter3d(
+            x=vz, y=vx, z=vy,  # (z,x,y)
+            mode="markers",
+            marker=dict(size=6, symbol="diamond"),
+            name="MC vertices",
+            opacity=0.9,
+        ))
 
     fig.update_layout(
         scene=dict(
