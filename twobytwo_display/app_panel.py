@@ -104,7 +104,9 @@ clusters_info = pn.pane.Markdown("", height=180)
 
 view3d = pn.pane.Plotly(sizing_mode="stretch_both")
 view2d = pn.pane.Plotly(sizing_mode="stretch_both")
-view_analysis = pn.pane.Plotly(sizing_mode="stretch_both")
+analysis_text = pn.pane.Markdown("", sizing_mode="stretch_width")
+analysis_plot = pn.pane.Plotly(min_height=450, sizing_mode="stretch_width")
+view_analysis = pn.Column(analysis_text, analysis_plot, sizing_mode="stretch_both")
 
 
 def _set_status(message: str, ok: bool = True):
@@ -222,6 +224,8 @@ def _refresh_views(*_):
     if state.flow is None:
         view3d.object = None
         view2d.object = None
+        analysis_text.object = ""
+        analysis_plot.object = None
         return
 
     ev = int(event_slider.value)
@@ -296,10 +300,8 @@ def _refresh_views(*_):
 
     view3d.object = fig3d
     view2d.object = fig2d
-    view_analysis.object = pn.Column(
-        pn.pane.Markdown(_analysis_markdown(hits, clusters, truth_info), sizing_mode="stretch_width"),
-        pn.pane.Plotly(fig_analysis, min_height=450, sizing_mode="stretch_width"),
-    )
+    analysis_text.object = _analysis_markdown(hits, clusters, truth_info)
+    analysis_plot.object = fig_analysis
     _set_status(
         f"**File:** `{os.path.basename(state.path)}`  \n"
         f"**Event:** `{ev}`  \n"
