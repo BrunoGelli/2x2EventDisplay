@@ -16,6 +16,7 @@ import plotly.graph_objects as go
 
 from twobytwo_display.clustering import angle_to_z_of_centroid_line, dbscan_clusters
 from twobytwo_display.io import FlowFile
+import twobytwo_display.viz as viz
 from twobytwo_display.viz import (
     make_plotly_2d_projections,
     make_plotly_3d,
